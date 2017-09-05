@@ -20,6 +20,7 @@
     "extra": {
 	"installer-name": "silverstripe-mock-dataobjects"
     },
+    "bin": ["mockdata"],
     "replace": {
     	"silverstripe/mock-dataobjects": "*"
     }
