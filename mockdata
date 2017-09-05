@@ -1,35 +1,53 @@
 #!/usr/bin/php
 <?php
 
-function parse_parameters($noopt = array()) {
-    $result = array();
+// parse the cli arguments out into "arguments" and "options" and return them as a keyed array
+function parseParams($arguments = array(), $options = array()) {
     $params = $GLOBALS['argv'];
-    // could use getopt() here (since PHP 5.3.0), but it doesn't work relyingly
-    reset($params);
-    while (list($tmp, $p) = each($params)) {
-        if ($p{0} == '-') {
-            $pname = substr($p, 1);
-            $value = true;
-            if ($pname{0} == '-') {
-                // long-opt (--<param>)
-                $pname = substr($pname, 1);
-                if (strpos($p, '=') !== false) {
-                    // value specified inline (--<param>=<value>)
-                    list($pname, $value) = explode('=', substr($p, 2), 2);
+    $result = array();
+    reset($params); // first param can be ignored
+    // loop over all arguments
+    while (($currentParam = next($params)) !== false) {
+        // if the parameter starts with a `-` then it's an "option"
+        if ($currentParam[0] === '-') {
+            // trim off the starting `-` (we could have 1 or 2 due to legacy support)
+            $param = ltrim($currentParam, '-');
+            $value = true; // default value
+            // a param could be `--` and that should be ignored
+            if ($param) {
+                // if the param has a `=` then we assume it's param=value
+                if (strpos($param, '=') !== false) {
+                    list($param, $value) = explode('=', $param, 2);
+                } elseif (($nextParam = next($params)) !== false) {// check the next param to see if it's a value or not
+                    // not a value, so move the array pointer back
+                    if ($nextParam[0] === '-') {
+                        prev($params);
+                    } else {
+                        // it's a valid value
+                        $value = $nextParam;
+                    }
                 }
+                // if the param is unknown then throw an error
+                if (!in_array($param, $options)) {
+                    echo "Unknown argument: $param" . PHP_EOL;
+                    exit(1);
+                }
+                $result[$param] = $value;
             }
-            // check if next parameter is a descriptor or a value
-            $nextparm = current($params);
-            if (!in_array($pname, $noopt) && $value === true && $nextparm !== false && $nextparm{0} != '-') list($tmp, $value) = each($params);
-            $result[$pname] = $value;
         } else {
-            // param doesn't belong to any option
-            $result[] = $p;
+            // no leading `-` so it's an "argument"
+            if (!empty($arguments)) {
+                // record the named arguments in the order they appear
+                $result[array_shift($arguments)] = $currentParam;
+            } else {
+                // no arguments left so we've been supplied too many
+                echo "Too many arguments supplied" . PHP_EOL;
+                exit(1);
+            }
         }
     }
     return $result;
 }
-
 
 function switch_to_project_root() {
     while (dirname(getcwd()) != "/") {
@@ -78,8 +96,10 @@ function run_process($cmd)
        if( !feof($pipes[2]) ) $read[]= $pipes[2];
 
        if (!$read) break;
+       $write = array();
+       $ex = array();
 
-       $ready= stream_select($read, $write=NULL, $ex= NULL, 2);
+       $ready= stream_select($read, $write, $ex, 2);
 
        if ($ready === false) {
            break; #should never happen - something died
@@ -99,15 +119,13 @@ function run_process($cmd)
 
 }
 
-
-
 $help = "
 	Usage: mockdata <generate|populate|cleanup>
 	Options:
-	\t-count\t\t\t\tThe number of records to create
-	\t-relation-limit\t\t\tThe number of related records to create when relations are enabled
-	\t-parent\t\t\t\tAn identifying ID, URLSegment of the parent object
-	\t-parent-field\t\t\tThe parent field for the object being created. Defaults to ParentID. Only used when -parent is specified.
+	\t--count\t\t\t\tThe number of records to create
+	\t--relation-limit\t\t\tThe number of related records to create when relations are enabled
+	\t--parent\t\t\t\tAn identifying ID, URLSegment of the parent object
+	\t--parent-field\t\t\tThe parent field for the object being created. Defaults to ParentID. Only used when -parent is specified.
 	\t
 	\t--no-relations\t\t\tSuppress creation of related has_many/many_many records
 	\t--no-downloads\t\t\tSuppress downloading of images. Use local stock images instead.
@@ -119,38 +137,54 @@ if(!$framework_dir = switch_to_project_root()) {
 	die();
 }
 
+$parsedParams = parseParams(
+    array(
+        'command',
+        'class',
+    ),
+    array(
+        'count',
+        'relation-limit',
+        'parent',
+        'parent-field',
+        'no-relations',
+        'no-downloads',
+    )
+);
+
+$operation = !empty($parsedParams['command']) ? $parsedParams['command'] : '';
+$className = !empty($parsedParams['class']) ? $parsedParams['class'] : '';
 
 
-$PARAMS = parse_parameters();
-
-if(!isset($PARAMS[1]) || !in_array($PARAMS[1], array('generate','populate','cleanup','help'))) {
-	die($help);
+if (empty($operation) || !in_array($operation, array('generate','populate','cleanup','help'))) {
+	echo $help;
+	exit(1);
 }
 
-if(!isset($PARAMS[2])) {
-  if($PARAMS[1] == "cleanup") {
-    $PARAMS[2] = "__all__";
-  }
-  else {
-    die($help);
-  }
+if($operation == "help") {
+    echo $help;
+    exit (0);
 }
 
-$operation = $PARAMS[1];
-$className = $PARAMS[2];
-if($operation == "help") die($help);
-
+if(!$className) {
+  if($operation == "cleanup") {
+    $className = "__all__";
+  } else {
+    echo $help;
+    exit(1);
+  }
+}
 
 $args = array();
-$args[] = isset($PARAMS['parent']) ? "--parent=".$PARAMS['parent'] : "";
-$args[] = isset($PARAMS['parent-field']) ? "--parentField=".$PARAMS['parent-field'] : "";
-$args[] = isset($PARAMS['count']) ? "--count=" . $PARAMS['count'] : "";
-$args[] = isset($PARAMS['no-releations']) ? "--includeRelations=false" : "";
-$args[] = isset($PARAMS['no-downloads']) ? "--downloadImages=false" : "";
-$args[] = isset($PARAMS['relation-limit']) ? "--relationCreateLimit=".$PARAMS['relation-limit'] : "";
-$args[] = isset($PARAMS['overwrite']) ? "--onlyEmpty=false" : "";
+$args[] = isset($parsedParams['parent']) ? "parent=".$parsedParams['parent'] : "";
+$args[] = isset($parsedParams['parent-field']) ? "parentField=".$parsedParams['parent-field'] : "";
+$args[] = isset($parsedParams['count']) ? "count=" . $parsedParams['count'] : "";
+$args[] = isset($parsedParams['no-relations']) ? "includeRelations=false" : "";
+$args[] = isset($parsedParams['no-downloads']) ? "downloadImages=false" : "";
+$args[] = isset($parsedParams['relation-limit']) ? "relationCreateLimit=".$parsedParams['relation-limit'] : "";
+$args[] = isset($parsedParams['overwrite']) ? "onlyEmpty=false" : "";
 
 $arguments = implode(" ", $args);
-$cmd = $framework_dir . "/sake dev/tasks/MockDataTask $operation $className $arguments  --flush=all";
+$cmd = $framework_dir . "/sake dev/tasks/MockDataTask $operation $className $arguments flush=all";
 run_process($cmd);
 echo "\n\n";
